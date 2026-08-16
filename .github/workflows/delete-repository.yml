@@ -1,0 +1,73 @@
+# POC-ONLY: testovací stub černé skříňky delete-repository (viz README.md
+# vedle tohoto souboru a axiom Práva členů organizace v defs/defs.md).
+# Bezpečnost: tělo issue se NIKDY neinterpoluje do run: bloku – čte se z
+# event souboru a validuje před prvním použitím; titulek je jen v `if:`
+# výrazu (ne v shellu). Mazání jede přes PAT v secrets.DELETE_BOT_TOKEN,
+# issue operace přes běžný GITHUB_TOKEN.
+name: delete-repository
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  delete:
+    if: startsWith(github.event.issue.title, 'Delete repository:')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validace a smazání repa dle issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DELETE_TOKEN: ${{ secrets.DELETE_BOT_TOKEN }}
+          OWN_ORG: ${{ github.repository_owner }}
+          SELF_REPO: ${{ github.repository }}
+          GOV_REPO_GUARD: czmh-icc-governance-repository
+        run: |
+          set -euo pipefail
+          number=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
+          login=$(jq -r '.issue.user.login // empty' "$GITHUB_EVENT_PATH")
+          body=$(jq -r '.issue.body // empty' "$GITHUB_EVENT_PATH")
+
+          reject() {
+            gh issue comment "$number" --repo "$SELF_REPO" \
+              --body "Požadavek odmítnut: $1" >/dev/null
+            gh issue close "$number" --repo "$SELF_REPO" \
+              --reason "not planned" >/dev/null
+            exit 0
+          }
+
+          # Tělo = právě jedna neprázdná řádka <org>/<repo> (CR tolerováno).
+          body=$(printf '%s\n' "$body" | tr -d '\r' | grep . || true)
+          if [ "$(printf '%s\n' "$body" | grep -c .)" != 1 ]; then
+            reject "tělo issue musí obsahovat jedinou řádku <org>/<repo>"
+          fi
+          path="$body"
+          case "$path" in
+            "$OWN_ORG"/*) ;;
+            *) reject "repo musí být v organizaci $OWN_ORG" ;;
+          esac
+          name="${path#*/}"
+          if ! printf '%s' "$name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+            reject "nevalidní název repa"
+          fi
+          if [ "$path" = "$SELF_REPO" ] || [ "$name" = "$GOV_REPO_GUARD" ]; then
+            reject "toto repo mazat nelze (pojistka stubu)"
+          fi
+          if ! GH_TOKEN="$DELETE_TOKEN" gh api "repos/$path" >/dev/null 2>&1; then
+            reject "repo '$path' neexistuje nebo na něj PAT nedosáhne"
+          fi
+          # Napodobení produkce: žádost smí podat jen admin mazaného repa.
+          perm=$(GH_TOKEN="$DELETE_TOKEN" gh api \
+            "repos/$path/collaborators/$login/permission" \
+            --jq .permission 2>/dev/null || echo none)
+          if [ "$perm" != admin ]; then
+            reject "autor issue není admin repa '$path' (zjištěno: $perm)"
+          fi
+
+          GH_TOKEN="$DELETE_TOKEN" gh api -X DELETE "repos/$path"
+          gh issue comment "$number" --repo "$SELF_REPO" \
+            --body "Repo '$path' smazáno." >/dev/null
+          gh issue close "$number" --repo "$SELF_REPO" --reason completed >/dev/null
