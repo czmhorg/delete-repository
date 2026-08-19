@@ -50,7 +50,9 @@ jobs:
             *) reject "repo musí být v organizaci $OWN_ORG" ;;
           esac
           name="${path#*/}"
-          if ! printf '%s' "$name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+          # LC_ALL=C: rozsahy [A-Za-z] v grep jsou locale-závislé
+          # (docs/locale-rozsahy-regex-validace.md).
+          if ! printf '%s' "$name" | LC_ALL=C grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
             reject "nevalidní název repa"
           fi
           if [ "$path" = "$SELF_REPO" ] || [ "$name" = "$GOV_REPO_GUARD" ]; then
